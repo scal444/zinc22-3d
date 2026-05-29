@@ -17,9 +17,7 @@ export COMMON_DIR=$LONGCACHE/build_3d_common_$(whoami)
 
 # don't set default version in here- do it in submit-all.bash
 export DOCK_VERSION=${DOCK_VERSION}
-export CORINA_VERSION=${CORINA_VERSION}
 export PYENV_VERSION=${PYENV_VERSION}
-export JCHEM_VERSION=${JCHEM_VERSION}
 export OPENBABEL_VERSION=${OPENBABEL_VERSION}
 export EXTRALIBS_VERSION=${EXTRALIBS_VERSION}
 
@@ -27,7 +25,7 @@ export PYTHONBASE=$COMMON_DIR/$PYENV_VERSION
 export DOCKBASE=$COMMON_DIR/${DOCK_VERSION}
 
 failed=
-for required_var in INPUT OUTPUT DOCK_VERSION CORINA_VERSION PYENV_VERSION JCHEM_VERSION OPENBABEL_VERSION EXTRALIBS_VERSION; do
+for required_var in INPUT OUTPUT DOCK_VERSION PYENV_VERSION OPENBABEL_VERSION EXTRALIBS_VERSION; do
 	if [ -z ${!required_var} ]; then
 		echo "missing $required_var!" 1>&2
 		failed=1
@@ -61,7 +59,7 @@ function extract_cmd {
 
 # added an additional check to make sure software dir isn't empty, since this seems to have happened before
 # "lib" is a bandaid to fix some libraries that weren't found- can probably include most of it with openbabel-install
-for software in $DOCK_VERSION $PYENV_VERSION $EXTRALIBS_VERSION $OPENBABEL_VERSION $JCHEM_VERSION $CORINA_VERSION $EXTRALIBS_VERSION; do
+for software in $DOCK_VERSION $PYENV_VERSION $EXTRALIBS_VERSION $OPENBABEL_VERSION $EXTRALIBS_VERSION; do
 	(
 		flock -x 9
 		if ! [ -f $COMMON_DIR/$software/.done ] || [ $(ls $COMMON_DIR/$software | wc -l) -eq 0 ]; then
@@ -137,25 +135,14 @@ log LD_LIBRARY_PATH=$LD_LIBRARY_PATH
 
 #export AMSOLEXE=$SOFTBASE/amsol/in-house/amsol7.1-colinear-fix/amsol7.1
 
-# Experimental changes to DOCK ligand pipeline
-export EMBED_PROTOMERS_3D_EXE=$DOCKBASE/ligand/3D/embed3d_corina.sh
-# parameters related to omega
-# set omega energy window, if it equals 0, rotatable-bond-dependent window method.
-export OMEGA_ENERGY_WINDOW=${OMEGA_ENERGY_WINDOW-12}
-# set omega max number of confs, if it equals 0, rotatable-bond-dependent window method.
-export OMEGA_MAX_CONFS=${OMEGA_MAX_CONFS-600}
-# set the omega torsion library: 1) Original; 2) GubaV21
-export OMEGA_TORLIB=${OMEGA_TORLIB-Original}
-# set the omega force field. Options are in the link below
-# https://docs.eyesopen.com/toolkits/cpp/oefftk/OEFFConstants/OEMMFFSheffieldFFType.html#OEFF::OEMMFFSheffieldFFType::MMFF94Smod
-export OMEGA_FF=${OMEGA_FF-MMFF94Smod}
-# set the omega rmsd for clustering and filtering conformations, if it equals 0, rotatable-bond-dependent window method.
-export OMEGA_RMSD=${OMEGA_RMSD-0.5}
+# RDKit conformer-generation defaults matching the old OMEGA production gates.
+export RDKIT_CONF_ENERGY_WINDOW=${RDKIT_CONF_ENERGY_WINDOW-12}
+export RDKIT_CONF_BUDGET_BASE=${RDKIT_CONF_BUDGET_BASE-600}
+export RDKIT_CONF_RMSD=${RDKIT_CONF_RMSD-0.5}
+export RDKIT_CONF_TIMEOUT=${RDKIT_CONF_TIMEOUT-120}
+export RDKIT_CONF_SEED=${RDKIT_CONF_SEED-0xf00d}
 
 # Dependencies
-
-# CORINA env.sh on wynton has an incorrect path specified
-export PATH="$COMMON_DIR/$CORINA_VERSION:${PATH}"
 
 # so does openbabel
 export OBABELBASE=$COMMON_DIR/$OPENBABEL_VERSION
@@ -164,19 +151,6 @@ export BABEL_LIBDIR=$COMMON_DIR/$OPENBABEL_VERSION/lib/openbabel/$OB_VER
 export BABEL_DATADIR=$COMMON_DIR/$OPENBABEL_VERSION/share/openbabel/$OB_VER
 export PATH="${PATH}:${OBABELBASE}/bin"
 
-
-
-# aaand jchem too. all the software
-# activate the openeye license
-LICENSE_HOME=${LICENSE_HOME-$SOFT_HOME}
-export OE_LICENSE=$LICENSE_HOME/.oe-license.txt
-export CHEMAXON_PATH=$COMMON_DIR/$JCHEM_VERSION
-export CHEMAXON_LICENSE_URL=$LICENSE_HOME/.jchem-license.cxl
-export PATH="$PATH:$CHEMAXON_PATH/bin"
-
-LIMIT_JAVA="${DOCKBASE}/common/java-thread-limiter/mock-num-cpus 2"
-export CXCALCEXE="`which cxcalc `"
-export MOLCONVERTEXE="`which molconvert`"
 export PATH="${PATH}:${DOCKBASE}/bin"
 
 # activate python environment

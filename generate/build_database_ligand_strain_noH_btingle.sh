@@ -45,6 +45,14 @@ USAGE="Usage: ${0} [OPTIONS] <SOURCE_FILE>
 
 set -e
 
+PIPELINE_TIMER_START="$( date +%s )"
+function pipeline_timing {
+    local label="${1}"
+    local start="${2}"
+    local end="$( date +%s )"
+    echo "TIMING ${label}: $(( end - start ))s" 1>&2
+}
+
 DOCKBASE="${DOCKBASE-$( dirname $( dirname $( dirname $BASH_SOURCE ) ) )}"
 
 DEBUG="${DEBUG-}"
@@ -65,7 +73,7 @@ DBNAME="${NAME-}"
 TASK_DIR="${TASK_DIR-$( pwd )}"
 BAD_PROTOMER_CHARGES="${BAD_PROTOMER_CHARGES-${DOCKBASE}/ligand/protonate/data/bad-charges.txt}"
 
-TAUOMERIZE_PROTONATE_EXE="${TAUOMERIZE_PROTONATE_EXE-${DOCKBASE}/ligand/protonate/tautprot_cxcalc.sh}"
+TAUOMERIZE_PROTONATE_EXE="${TAUOMERIZE_PROTONATE_EXE-${DOCKBASE}/ligand/protonate/tautprot_rdkit.py}"
 #PROTOMER_COALESE_EXE="${PROTOMER_COALESE_EXE-${DOCKBASE}/ligand/protonate/coalese.py --sort --limits=1 --filter=${BAD_PROTOMER_CHARGES}}"
 PROTOMER_COALESE_EXE="${PROTOMER_COALESE_EXE-${DOCKBASE}/ligand/protonate/coalese.py3.py --sort --limits=1 --filter=${BAD_PROTOMER_CHARGES}}"
 #PROTOMER_STEREOCENTERS_EXE="${PROTOMER_STEREOCENTERS_EXE-${DOCKBASE}/ligand/protonate/expand-new-stereocenters.py}"
@@ -245,6 +253,7 @@ if ! [ -f $EXPANDED_PROTOMER_SMILES ]; then
 
     echo "" 1>&2
     pushd "${PROTONATING_DIR}" 1>&2
+    stage_start="$( date +%s )"
     if [ "${CREATE_TAUTOMERS}" == "yes" ] ; then
         echo "Precomputing protomers for all compounds (pH: ${PROTOMER_PH_LEVELS[@]})" 1>&2
         INCOMMING_SMILES="${CLEANED_SMILES}"
@@ -309,8 +318,10 @@ if ! [ -f $EXPANDED_PROTOMER_SMILES ]; then
         echo $( cut -d\   -f 2 "${PROTONATED_FILE}" | uniq | wc -l ) "substances and" \
             $( cut -d\   -f 2 "${PROTONATED_FILE}" | wc -l ) "protomers extracted" 1>&2
     fi
+    pipeline_timing "protonation" "${stage_start}"
             
     echo "Coalesing and merging protomers" 1>&2
+    stage_start="$( date +%s )"
     # Pull reference Protomer (id: 0) from mid-pH protomer list
     if ! $PROTOMER_COALESE_EXE "${PROTONATED_FILES[0]}" "${PROTONATED_FILES[@]}" \
             | sed 's/\s\+/ /g' \
@@ -338,18 +349,21 @@ if ! [ -f $EXPANDED_PROTOMER_SMILES ]; then
     else
         echo $( cat "${GENERATED_PROTOMER_SMILES}" | wc -l ) "protomers generated for" $( cat "${INCOMMING_SMILES}" | wc -l ) "compounds" 1>&2
     fi
+    pipeline_timing "protomer coalesce" "${stage_start}"
 
     if [ "${USE_3D}" == "yes" ] ; then
         echo "Using existing 3D embeddings. Not expanding stereochemistry" 1>&2
         cp -v "${GENERATED_PROTOMER_SMILES}" "${EXPANDED_PROTOMER_SMILES}" 1>&2
     else
         echo "Checking for new stereocenters and expanding" 1>&2
+        stage_start="$( date +%s )"
         if ! $PROTOMER_STEREOCENTERS_EXE "${GENERATED_PROTOMER_SMILES}" > "${EXPANDED_PROTOMER_SMILES}" ; then
             echo "Stereo expansion failed. Proeeding with original protomers" 1>&2
             cp -v "${GENERATED_PROTOMER_SMILES}" "${EXPANDED_PROTOMER_SMILES}" 1>&2
         else
             echo $( cat "${EXPANDED_PROTOMER_SMILES}" | wc -l ) "protomers after new stereo-center expansion" 1>&2
         fi
+        pipeline_timing "stereo expansion" "${stage_start}"
     fi
 
     popd 1>&2
@@ -366,6 +380,7 @@ fi
 # hello! if you are currently trying to muck around with the 3D scripts, you should know that the above code was written a generation before the below code
 # the above bit of code was never a bottleneck and worked as far as I knew, so I kept it like it is. bash programming is not super readable, so good luck if you need to fix a bug :)
 
+stage_start="$( date +%s )"
 python ${DOCKBASE}/ligand/generate/build_ligands.py ${EXPANDED_PROTOMER_SMILES} &
 buildpid=$!
 
@@ -375,8 +390,16 @@ function signal_build_ligands {
 trap signal_build_ligands SIGUSR1
 trap signal_build_ligands SIGINT
 
-while [ -z "$(kill -0 $buildpid 2>&1)" ]; do
-	sleep 5
-done
+set +e
+wait $buildpid
+build_status=$?
+set -e
+pipeline_timing "3d build" "${stage_start}"
+pipeline_timing "total pipeline" "${PIPELINE_TIMER_START}"
+if [ "${build_status}" -ne 0 ] ; then
+    exit "${build_status}"
+fi
 
-[ ! -z "${DEBUG}" ] && echo -n "BENCHMARK: STOP all building | " && date
+if [ ! -z "${DEBUG}" ] ; then
+    echo -n "BENCHMARK: STOP all building | " && date
+fi

@@ -1,7 +1,7 @@
 import os
 import sys
 import math
-from openeye.oechem import *
+import mol2amsol
 
 VERBOSE = False
 
@@ -35,19 +35,22 @@ def read_ZmatMOPAC(Zmat_file):
             # this error message should be avoided, therefore the first three Z-matrix lines should be slightly modified
             if (line_key_out == 1):
                spl = line.split()
-               spl[2] = "0" # instead of 1
-               spl[4] = "0" # instead of 1
-               spl[6] = "0" # instead of 1
-               line = "%-2s %10.6f %2d %11.6f %2d %11.6f %2d %5d %3d %3d\n" % (spl[0],float(spl[1]),int(spl[2]),float(spl[3]),int(spl[4]),float(spl[5]),int(spl[6]),int(spl[7]),int(spl[8]),int(spl[9])) 
+               if len(spl) >= 10:
+                  spl[2] = "0" # instead of 1
+                  spl[4] = "0" # instead of 1
+                  spl[6] = "0" # instead of 1
+                  line = "%-2s %10.6f %2d %11.6f %2d %11.6f %2d %5d %3d %3d\n" % (spl[0],float(spl[1]),int(spl[2]),float(spl[3]),int(spl[4]),float(spl[5]),int(spl[6]),int(spl[7]),int(spl[8]),int(spl[9]))
             if (line_key_out == 2):
                spl = line.split()
-               spl[4] = "0" # instead of 1
-               spl[6] = "0" # instead of 1
-               line = "%-2s %10.6f %2d %11.6f %2d %11.6f %2d %5d %3d %3d\n" % (spl[0],float(spl[1]),int(spl[2]),float(spl[3]),int(spl[4]),float(spl[5]),int(spl[6]),int(spl[7]),int(spl[8]),int(spl[9])) 
+               if len(spl) >= 10:
+                  spl[4] = "0" # instead of 1
+                  spl[6] = "0" # instead of 1
+                  line = "%-2s %10.6f %2d %11.6f %2d %11.6f %2d %5d %3d %3d\n" % (spl[0],float(spl[1]),int(spl[2]),float(spl[3]),int(spl[4]),float(spl[5]),int(spl[6]),int(spl[7]),int(spl[8]),int(spl[9]))
             if (line_key_out == 3):
                spl = line.split()
-               spl[6] = "0" # instead of 1
-               line = "%-2s %10.6f %2d %11.6f %2d %11.6f %2d %5d %3d %3d\n" % (spl[0],float(spl[1]),int(spl[2]),float(spl[3]),int(spl[4]),float(spl[5]),int(spl[6]),int(spl[7]),int(spl[8]),int(spl[9])) 
+               if len(spl) >= 10:
+                  spl[6] = "0" # instead of 1
+                  line = "%-2s %10.6f %2d %11.6f %2d %11.6f %2d %5d %3d %3d\n" % (spl[0],float(spl[1]),int(spl[2]),float(spl[3]),int(spl[4]),float(spl[5]),int(spl[6]),int(spl[7]),int(spl[8]),int(spl[9]))
                
             ZmatMOPAC_lines[line_key_out] = line
     infile_ZmatMOPAC.close()
@@ -68,7 +71,7 @@ def create_amsol71_inputfile(Path_and_NameZmatMOPACFile,MoleculeName,ZmatMOPAC_D
         print("just entered the function create_amsol71_inputfile(): ")
         print("")
         print("in the case of problems:")
-        print("Make sure that OpenEye OEChem is installed on your system.")
+        print("Make sure that the input mol2 file exists and has charges.")
         print("")
 
     string_Path_And_NameZmatMOPACFile = Path_and_NameZmatMOPACFile
@@ -83,22 +86,12 @@ def create_amsol71_inputfile(Path_and_NameZmatMOPACFile,MoleculeName,ZmatMOPAC_D
 
     # the AMSOL7.1 input needs the net charge of the molecule (in its specific protonated state):
     # The net charge will be extracted from temp.mol2 by adding the partial charges in this mol2-file
-    # An OpenEye python tool will be used to do this.
-    # 
-    mol = OEMol()
+    # Sum the mol2 atom charges and round to the integer net charge expected by AMSOL.
     infile = string_Path_And_NameZmatMOPACFile[0:-10] + ".mol2" 
-    ifs = oemolistream(infile)
-    OEReadMolecule(ifs, mol)
-    # OENetCharge():
-    # Determines the net charge on a molecule. If the molecule has specified partial charges, see OEChem's OEHasPartialCharges function,
-    # this function returns the sum of the partial charges rounded to an integer. 
-    # Otherwise this function returns the sum of the formal charges on each atom of the molecule.
-    netcharge = OENetCharge(mol)
+    mol = mol2amsol.read_Mol2_file(infile)[0]
+    netcharge = int(round(mol2amsol.formal_charge(mol)))
     if VERBOSE:
         print("netcharge of molecule in temp.mol2 (sum of partial charges):", netcharge)
-    ifs.close()
-    #
-    # COMMENT: DOCK's mol2amsol.py could also be used to sum up the partial charges in temp.mol2 file!
 
     # write the AMSOL7.1 keywords for a SM5.42R point calculation in water to the AMSOL7.1 water input-file:
     Water_Amsol71_SM542R_Keywords = """CHARGE=%s AM1 1SCF TLIMIT=15 GEO-OK SM5.42R\n& SOLVNT=WATER\n""" % netcharge
