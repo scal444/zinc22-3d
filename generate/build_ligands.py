@@ -411,7 +411,7 @@ with tarfile.open("output.tar.gz", mode='w:gz') as output:
         with tarfile.open("restart.tar.gz", mode='r:gz') as restart:
             found_mol2s = []
             dest_mol2_map = {
-                tar_name(get_zinc_directory_hash(mol.name), '.'.join([mol.name, str(mol.prot_id), chr(mol.charge+78)]), 'mol2') : mol for mol in mol2_data
+                tar_name(get_zinc_directory_hash(mol.name), '.'.join([mol.name, chr(mol.charge+78)]), 'mol2') : mol for mol in mol2_data
             }
             for name in restart.getnames():
                 with restart.extractfile(name) as memberfile:
@@ -423,8 +423,10 @@ with tarfile.open("output.tar.gz", mode='w:gz') as output:
             # set() fixes a weird bug where distinct protomers are generated but given id 0, causing identical mol2s in the output
             # update from the future: this is fixed at the protomer generation step now, this fix is no longer necessary
             found_mol2s = list(set(found_mol2s))
-            for mol2 in [dest_mol2_map[m] for m in found_mol2s]:
-                mol2_data.remove(mol2)
+            for mol2_name in found_mol2s:
+                mol2 = dest_mol2_map.get(mol2_name)
+                if mol2 is not None:
+                    mol2_data.remove(mol2)
 
     t_strain_tot = t_db2_tot = t_conformer_tot = t_convert_tot = 0
     conformer_failures = 0
