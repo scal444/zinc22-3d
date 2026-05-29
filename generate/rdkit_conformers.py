@@ -22,6 +22,7 @@ DEFAULT_RMSD_THRESHOLD = 0.5
 DEFAULT_TIMEOUT = 120
 DEFAULT_SEED = 0xF00D
 DEFAULT_BACKEND = "rdkit"
+DEFAULT_SEED_BACKEND = "rdkit"
 
 
 def _env_int(name, default):
@@ -54,11 +55,20 @@ def _env_int_list(name, default):
 
 def selected_backend():
     backend = os.environ.get("CONFORMER_BACKEND", DEFAULT_BACKEND).strip().lower()
+    return _normalize_backend_name(backend, "CONFORMER_BACKEND")
+
+
+def selected_seed_backend():
+    backend = os.environ.get("SEED_CONFORMER_BACKEND", DEFAULT_SEED_BACKEND).strip().lower()
+    return _normalize_backend_name(backend, "SEED_CONFORMER_BACKEND")
+
+
+def _normalize_backend_name(backend, env_name):
     if backend in {"", "rdkit"}:
         return "rdkit"
     if backend in {"nv", "nvidia", "nvmolkit"}:
         return "nvmolkit"
-    raise ValueError("Unsupported CONFORMER_BACKEND={!r}".format(backend))
+    raise ValueError("Unsupported {}={!r}".format(env_name, backend))
 
 
 def _conformer_budget(num_rotatable_terminal_h):
@@ -252,7 +262,7 @@ def _embed_conformers(mol, num_confs, seed, backend):
 
 def generate_seed_conformation(mol, seed=DEFAULT_SEED):
     """Return a one-conformer RDKit Mol suitable for the AMSOL seed mol2."""
-    backend = selected_backend()
+    backend = selected_seed_backend()
     seed = _env_int("RDKIT_CONF_SEED", seed)
     mol = Chem.Mol(mol)
     cids = _embed_conformers(mol, 1, seed, backend)

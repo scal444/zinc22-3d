@@ -1,0 +1,16 @@
+name: zinc22-nvmolkit
+channels:
+  - conda-forge
+dependencies:
+  - python=3.11
+  - rdkit=2025.09.5
+  - openbabel=3.1.1
+  - dimorphite-dl=2.0.2
+  - scipy
+  - pytest
+  - tcsh
+  - nvmolkit=0.5.0
+  - cuda-version=12.9
+  - pytorch=2.10.0=*cuda129*
+  - libtorch=2.10.0=*cuda129*
+  - triton=3.5.1

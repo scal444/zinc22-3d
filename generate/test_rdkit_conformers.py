@@ -6,7 +6,9 @@ from generate.rdkit_conformers import (
     CONF_ENERGY_PROP,
     CONF_FORCEFIELD_PROP,
     generate_conformations,
+    generate_seed_conformation,
     selected_backend,
+    selected_seed_backend,
 )
 
 
@@ -39,3 +41,15 @@ def test_rejects_unknown_conformer_backend(monkeypatch):
 
     with pytest.raises(ValueError, match="Unsupported CONFORMER_BACKEND"):
         selected_backend()
+
+
+def test_seed_backend_defaults_to_rdkit_when_ensemble_backend_is_nvmolkit(monkeypatch):
+    monkeypatch.setenv("CONFORMER_BACKEND", "nvmolkit")
+
+    assert selected_seed_backend() == "rdkit"
+
+
+def test_seed_backend_uses_seed_override(monkeypatch):
+    monkeypatch.setenv("SEED_CONFORMER_BACKEND", "nvmolkit")
+
+    assert selected_seed_backend() == "nvmolkit"
