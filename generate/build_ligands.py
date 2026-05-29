@@ -26,6 +26,10 @@ from hierarchy import Hierarchy
 from mol2db2 import mol2db2_quick
 from Torsion_Strain import calc_strain
 from TL_Functions import Mol2MolSupplier_noF
+try:
+    from nvtx_ranges import nvtx_range
+except ImportError:
+    from generate.nvtx_ranges import nvtx_range
 from rdkit_conformers import (
     CONF_BACKEND_PROP,
     CONF_ENERGY_PROP,
@@ -146,28 +150,29 @@ def pin_largest_rigid_fragment(rdkit_mol, template):
     if rdkit_mol.GetNumConformers() < 2:
         return rdkit_mol
 
-    atom_map = largest_rigid_atom_map(template)
-    if len(atom_map) < 2:
-        return rdkit_mol
+    with nvtx_range("conformer.pin_largest_rigid_fragment"):
+        atom_map = largest_rigid_atom_map(template)
+        if len(atom_map) < 2:
+            return rdkit_mol
 
-    rdkit_mol = Chem.Mol(rdkit_mol)
-    ref_id = rdkit_mol.GetConformer(0).GetId()
-    ref_conf = rdkit_mol.GetConformer(ref_id)
-    ref_positions = {
-        atom_idx: ref_conf.GetAtomPosition(atom_idx)
-        for atom_idx, _ref_idx in atom_map
-    }
+        rdkit_mol = Chem.Mol(rdkit_mol)
+        ref_id = rdkit_mol.GetConformer(0).GetId()
+        ref_conf = rdkit_mol.GetConformer(ref_id)
+        ref_positions = {
+            atom_idx: ref_conf.GetAtomPosition(atom_idx)
+            for atom_idx, _ref_idx in atom_map
+        }
 
-    for conf in list(rdkit_mol.GetConformers())[1:]:
-        rdMolAlign.AlignMol(
-            rdkit_mol,
-            rdkit_mol,
-            prbCid=conf.GetId(),
-            refCid=ref_id,
-            atomMap=atom_map,
-        )
-        for atom_idx, pos in ref_positions.items():
-            conf.SetAtomPosition(atom_idx, pos)
+        for conf in list(rdkit_mol.GetConformers())[1:]:
+            rdMolAlign.AlignMol(
+                rdkit_mol,
+                rdkit_mol,
+                prbCid=conf.GetId(),
+                refCid=ref_id,
+                atomMap=atom_map,
+            )
+            for atom_idx, pos in ref_positions.items():
+                conf.SetAtomPosition(atom_idx, pos)
 
     return rdkit_mol
 
@@ -210,12 +215,13 @@ def reorder_seed_for_amsol(mol):
 
 
 def write_seed_mol2(smiles, name, outfile):
-    mol = rdkit_mol_from_smiles(smiles, name)
-    seed = generate_seed_conformation(mol)
-    seed = reorder_seed_for_amsol(seed)
-    mol2_text = rdkit_mol_to_mol2_text(seed, seed.GetConformer().GetId(), name)
-    with open(outfile, "w") as out:
-        out.write(mol2_text)
+    with nvtx_range("pipeline.seed_mol2.{}".format(name)):
+        mol = rdkit_mol_from_smiles(smiles, name)
+        seed = generate_seed_conformation(mol)
+        seed = reorder_seed_for_amsol(seed)
+        mol2_text = rdkit_mol_to_mol2_text(seed, seed.GetConformer().GetId(), name)
+        with open(outfile, "w") as out:
+            out.write(mol2_text)
     return seed
 
 
@@ -319,25 +325,27 @@ for mol2, protomer in protonated_flat:
 
     # calculate solvation as we go along
     if not os.path.isdir("solv/" + str(mol2)):
-        os.makedirs("solv/" + str(mol2), exist_ok=True)
-        mol2_fullname = '.'.join([name, 'mol2'])
-        subprocess.call(["ln", "-svfn", os.getcwd() + "/3d/" + str(mol2), "solv/" + str(mol2) + "/" + mol2_fullname])
-        os.chdir("solv/" + str(mol2))
-        csh_exe = os.environ.get("CSH", "/bin/csh")
-        subprocess.call([csh_exe, "-f", DOCKBASE + "/ligand/amsol/calc_solvation.csh", mol2_fullname])
-        os.chdir("../..")
+        with nvtx_range("pipeline.solvation.{}".format(name)):
+            os.makedirs("solv/" + str(mol2), exist_ok=True)
+            mol2_fullname = '.'.join([name, 'mol2'])
+            subprocess.call(["ln", "-svfn", os.getcwd() + "/3d/" + str(mol2), "solv/" + str(mol2) + "/" + mol2_fullname])
+            os.chdir("solv/" + str(mol2))
+            csh_exe = os.environ.get("CSH", "/bin/csh")
+            subprocess.call([csh_exe, "-f", DOCKBASE + "/ligand/amsol/calc_solvation.csh", mol2_fullname])
+            os.chdir("../..")
 
     if os.path.isfile("solv/" + str(mol2) + "/output.solv"):
 
-        with open("solv/" + str(mol2) + "/output.solv") as solv:
-            solv_text = solv.read()
+        with nvtx_range("pipeline.read_solvated_mol2.{}".format(name)):
+            with open("solv/" + str(mol2) + "/output.solv") as solv:
+                solv_text = solv.read()
 
-        with open("solv/" + str(mol2) + "/output.mol2") as mol2_f:
-            try:
-                mol = MultiMol2(mol2_f.read(), rdkit_seed_mols.get(mol2))
-            except Exception as exc:
-                print("RDKit mol2 parsing failed for {}: {}".format(name, exc), file=sys.stderr)
-                continue
+            with open("solv/" + str(mol2) + "/output.mol2") as mol2_f:
+                try:
+                    mol = MultiMol2(mol2_f.read(), rdkit_seed_mols.get(mol2))
+                except Exception as exc:
+                    print("RDKit mol2 parsing failed for {}: {}".format(name, exc), file=sys.stderr)
+                    continue
             solv_data.append(solv_text)
             mol.idx = mol2
             mol.name = name
@@ -433,13 +441,16 @@ with tarfile.open("output.tar.gz", mode='w:gz') as output:
         print(zinc_hash + '/' + mol_fullname)
 
         # new wrapper function added to hydrogens.py, count_hydrogens
-        h = count_hydrogens(mol.dockFormat)
+        with nvtx_range("pipeline.count_rotatable_terminal_h.{}".format(mol.name)):
+            h = count_hydrogens(mol.dockFormat)
         if not skip_conformers:
             start = time.time()
             try:
-                _seed, ensemble = generate_conformations(mol.rdkitFormat, h)
-                ensemble = pin_largest_rigid_fragment(ensemble, mol.dockFormat)
-                db2ins = [MultiMol2.rdkit2dock_and_supplier(ensemble, mol.dockFormat)]
+                with nvtx_range("pipeline.conformer_stage.{}".format(mol.name)):
+                    _seed, ensemble = generate_conformations(mol.rdkitFormat, h)
+                    ensemble = pin_largest_rigid_fragment(ensemble, mol.dockFormat)
+                    with nvtx_range("pipeline.rdkit_to_dock_supplier.{}".format(mol.name)):
+                        db2ins = [MultiMol2.rdkit2dock_and_supplier(ensemble, mol.dockFormat)]
                 print(
                     "{} conformers: {} ({})".format(
                         ensemble.GetConformer(0).GetProp(CONF_BACKEND_PROP),
@@ -453,7 +464,8 @@ with tarfile.open("output.tar.gz", mode='w:gz') as output:
                 continue
             t_conformer_tot += (time.time() - start)
         else:
-            db2ins = [MultiMol2.rdkit2dock_and_supplier(mol.rdkitFormat, mol.dockFormat)]
+            with nvtx_range("pipeline.rdkit_to_dock_supplier.{}".format(mol.name)):
+                db2ins = [MultiMol2.rdkit2dock_and_supplier(mol.rdkitFormat, mol.dockFormat)]
 
         db2_all_data = ""
         mol_failed = False
@@ -466,7 +478,8 @@ with tarfile.open("output.tar.gz", mode='w:gz') as output:
             # new wrapper function added to Torsion_Strain.py, calc_strain
             start = time.time()
             try:
-                tE, pE = calc_strain(*db2in_strain)
+                with nvtx_range("pipeline.strain.{}".format(mol.name)):
+                    tE, pE = calc_strain(*db2in_strain)
             except Exception as exc:
                 strain_failures += 1
                 strain_count = len(db2in_strain[0]) if db2in_strain and db2in_strain[0] else getattr(db2in_standard, "xyzCount", 1)
@@ -482,7 +495,8 @@ with tarfile.open("output.tar.gz", mode='w:gz') as output:
             # new wrapper function added to mol2db2.py, mol2db2_quick
             start = time.time()
             try:
-                db2_data = mol2db2_quick(db2in_standard, solvfile="solv/" + str(mol.idx) + "/output.solv", clashfile=DOCKBASE + "/ligand/mol2db2/clashfile.txt")
+                with nvtx_range("pipeline.db2.{}".format(mol.name)):
+                    db2_data = mol2db2_quick(db2in_standard, solvfile="solv/" + str(mol.idx) + "/output.solv", clashfile=DOCKBASE + "/ligand/mol2db2/clashfile.txt")
             except Exception as exc:
                 db2_failures += 1
                 print("db2 generation failed for {}: {}".format(mol.name, exc), file=sys.stderr)
@@ -500,19 +514,21 @@ with tarfile.open("output.tar.gz", mode='w:gz') as output:
 
         start = time.time()
         try:
-            pdbqt_data = convert(mol2_data[i].data, 'mol2', 'pdbqt')
-            sdf_data   = convert(mol2_data[i].data, 'mol2', 'sdf')
+            with nvtx_range("pipeline.archive_conversions.{}".format(mol.name)):
+                pdbqt_data = convert(mol2_data[i].data, 'mol2', 'pdbqt')
+                sdf_data   = convert(mol2_data[i].data, 'mol2', 'sdf')
         except Exception as exc:
             conversion_failures += 1
             print("archive conversion failed for {}: {}".format(mol.name, exc), file=sys.stderr)
             continue
         t_convert_tot += (time.time() - start)
 
-        write_to_tarball(output, solv_data[i].encode('utf-8'),      name=tar_name(zinc_hash, mol_fullname, 'solv'))
-        write_to_tarball(output, mol2_data[i].data.encode('utf-8'), name=tar_name(zinc_hash, mol_fullname, 'mol2'))
-        write_to_tarball(output, sdf_data.encode('utf-8'),          name=tar_name(zinc_hash, mol_fullname, 'sdf'))
-        write_to_tarball(output, pdbqt_data.encode('utf-8'),        name=tar_name(zinc_hash, mol_fullname, 'pdbqt'))
-        write_to_tarball(output, db2_all_data.encode('utf-8'),      name=tar_name(zinc_hash, mol_fullname, 'db2.gz'))
+        with nvtx_range("pipeline.write_tar_entries.{}".format(mol.name)):
+            write_to_tarball(output, solv_data[i].encode('utf-8'),      name=tar_name(zinc_hash, mol_fullname, 'solv'))
+            write_to_tarball(output, mol2_data[i].data.encode('utf-8'), name=tar_name(zinc_hash, mol_fullname, 'mol2'))
+            write_to_tarball(output, sdf_data.encode('utf-8'),          name=tar_name(zinc_hash, mol_fullname, 'sdf'))
+            write_to_tarball(output, pdbqt_data.encode('utf-8'),        name=tar_name(zinc_hash, mol_fullname, 'pdbqt'))
+            write_to_tarball(output, db2_all_data.encode('utf-8'),      name=tar_name(zinc_hash, mol_fullname, 'db2.gz'))
         built_outputs += 1
 
     write_to_tarball(output, 'version={}'.format(os.environ.get("DOCK_VERSION")).encode('utf-8'), name=".dock_version")

@@ -21,7 +21,7 @@ export DOCKBASE=$HOME/experiments/zinc
 git clone git@github.com:scal444/zinc22-3d.git "$DOCKBASE/zinc22-3d"
 ln -sfn "$DOCKBASE/zinc22-3d" "$DOCKBASE/ligand"
 cd "$DOCKBASE/zinc22-3d"
-git switch nvmolkit_port
+git switch nvmolkit_profiling
 ```
 
 ## Conda Environment
@@ -152,6 +152,23 @@ still set. Stop the temporary MPS daemon after the run:
 
 ```bash
 printf 'quit\n' | nvidia-cuda-mps-control
+```
+
+## NVTX Profiling
+
+Set `ZINC_NVTX=1` to emit optional NVTX ranges around the seed, solvation,
+conformer, strain, DB2, conversion, and archive-write stages. With the variable
+unset, the annotations are no-ops.
+
+Example single-process profile:
+
+```bash
+export ZINC_NVTX=1
+nsys profile --trace=cuda,nvtx,osrt -o /tmp/zinc22-profile \
+  bash generate/build_database_ligand_strain_noH_btingle.sh \
+    -H 7.4 --no-db \
+    -d /tmp/zinc22-profile-run \
+    /path/to/input.smi
 ```
 
 ## Smoke Test

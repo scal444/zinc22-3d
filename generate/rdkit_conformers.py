@@ -11,6 +11,11 @@ from rdkit import Chem
 from rdkit.Chem import AllChem
 from rdkit.Chem import rdMolAlign
 
+try:
+    from nvtx_ranges import nvtx_range
+except ImportError:
+    from generate.nvtx_ranges import nvtx_range
+
 
 CONF_ENERGY_PROP = "rdkit_mmff94s_energy"
 CONF_FORCEFIELD_PROP = "rdkit_forcefield"
@@ -134,22 +139,24 @@ def _optimize_conformers_rdkit(mol):
     try:
         if not AllChem.MMFFHasAllMoleculeParams(mol):
             raise ValueError("MMFF94s parameters unavailable")
-        results = AllChem.MMFFOptimizeMoleculeConfs(
-            mol,
-            mmffVariant="MMFF94s",
-            maxIters=1000,
-            ignoreInterfragInteractions=False,
-        )
+        with nvtx_range("rdkit.mmff_optimize_confs"):
+            results = AllChem.MMFFOptimizeMoleculeConfs(
+                mol,
+                mmffVariant="MMFF94s",
+                maxIters=1000,
+                ignoreInterfragInteractions=False,
+            )
         forcefield = "MMFF94s"
     except Exception:
         # OMEGA used MMFF94Smod. RDKit MMFF94s is the closest available analog,
         # but molecules outside MMFF typing fall back to UFF rather than being
         # dropped from the build.
-        results = AllChem.UFFOptimizeMoleculeConfs(
-            mol,
-            maxIters=1000,
-            ignoreInterfragInteractions=False,
-        )
+        with nvtx_range("rdkit.uff_optimize_confs"):
+            results = AllChem.UFFOptimizeMoleculeConfs(
+                mol,
+                maxIters=1000,
+                ignoreInterfragInteractions=False,
+            )
         forcefield = "UFF"
     energies = [energy for _not_converged, energy in results]
     return energies, forcefield
@@ -179,12 +186,13 @@ def _optimize_conformers_nvmolkit(mol):
             "CONFORMER_BACKEND=nvmolkit requires nvmolkit.mmffOptimization"
         ) from exc
 
-    raw_energies = MMFFOptimizeMoleculesConfs(
-        molecules=[mol],
-        maxIters=_env_int("NVMOLKIT_MMFF_MAX_ITERS", 1000),
-        ignoreInterfragInteractions=False,
-        hardwareOptions=_nvmolkit_hardware_options(),
-    )
+    with nvtx_range("nvmolkit.mmff_optimize_confs"):
+        raw_energies = MMFFOptimizeMoleculesConfs(
+            molecules=[mol],
+            maxIters=_env_int("NVMOLKIT_MMFF_MAX_ITERS", 1000),
+            ignoreInterfragInteractions=False,
+            hardwareOptions=_nvmolkit_hardware_options(),
+        )
     return _normalize_nvmolkit_energies(raw_energies), "nvMolKit-MMFF94"
 
 
@@ -226,7 +234,8 @@ def _rmsd_by_atom_order(mol, prb_id, ref_id):
 def _embed_conformers_rdkit(mol, num_confs, seed):
     timeout = _env_int("RDKIT_CONF_TIMEOUT", DEFAULT_TIMEOUT)
     params = _etkdg_params(seed, timeout)
-    cids = list(AllChem.EmbedMultipleConfs(mol, numConfs=int(num_confs), params=params))
+    with nvtx_range("rdkit.embed_multiple_confs"):
+        cids = list(AllChem.EmbedMultipleConfs(mol, numConfs=int(num_confs), params=params))
     if not cids:
         raise ValueError("RDKit ETKDG generated zero conformers")
     return cids
@@ -241,13 +250,14 @@ def _embed_conformers_nvmolkit(mol, num_confs, seed):
         ) from exc
 
     mol.RemoveAllConformers()
-    EmbedMolecules(
-        molecules=[mol],
-        params=_nvmolkit_params(seed),
-        confsPerMolecule=int(num_confs),
-        maxIterations=_env_int("NVMOLKIT_MAX_ITERATIONS", -1),
-        hardwareOptions=_nvmolkit_hardware_options(),
-    )
+    with nvtx_range("nvmolkit.embed_molecules"):
+        EmbedMolecules(
+            molecules=[mol],
+            params=_nvmolkit_params(seed),
+            confsPerMolecule=int(num_confs),
+            maxIterations=_env_int("NVMOLKIT_MAX_ITERATIONS", -1),
+            hardwareOptions=_nvmolkit_hardware_options(),
+        )
     cids = [conf.GetId() for conf in mol.GetConformers()]
     if not cids:
         raise ValueError("nvMolKit ETKDG generated zero conformers")
@@ -264,11 +274,12 @@ def generate_seed_conformation(mol, seed=DEFAULT_SEED):
     """Return a one-conformer RDKit Mol suitable for the AMSOL seed mol2."""
     backend = selected_seed_backend()
     seed = _env_int("RDKIT_CONF_SEED", seed)
-    mol = Chem.Mol(mol)
-    cids = _embed_conformers(mol, 1, seed, backend)
-    energies, forcefield = _optimize_conformers(mol, backend)
-    energy_by_id = {cid: energies[i] for i, cid in enumerate(cids)}
-    return _copy_single_conformer(mol, cids[0], energy_by_id, forcefield, backend)
+    with nvtx_range("seed.generate.{}".format(backend)):
+        mol = Chem.Mol(mol)
+        cids = _embed_conformers(mol, 1, seed, backend)
+        energies, forcefield = _optimize_conformers(mol, backend)
+        energy_by_id = {cid: energies[i] for i, cid in enumerate(cids)}
+        return _copy_single_conformer(mol, cids[0], energy_by_id, forcefield, backend)
 
 
 def generate_conformations(mol, num_rotatable_terminal_h, seed=DEFAULT_SEED):
@@ -289,27 +300,31 @@ def generate_conformations(mol, num_rotatable_terminal_h, seed=DEFAULT_SEED):
     energy_window = _env_float("RDKIT_CONF_ENERGY_WINDOW", DEFAULT_ENERGY_WINDOW)
     rmsd_threshold = _env_float("RDKIT_CONF_RMSD", DEFAULT_RMSD_THRESHOLD)
 
-    mol = Chem.Mol(mol)
-    cids = _embed_conformers(mol, num_confs, seed, backend)
-    energies, forcefield = _optimize_conformers(mol, backend)
-    energy_by_id = {cid: energies[i] for i, cid in enumerate(cids)}
+    with nvtx_range("conformer.generate.{}".format(backend)):
+        mol = Chem.Mol(mol)
+        cids = _embed_conformers(mol, num_confs, seed, backend)
+        energies, forcefield = _optimize_conformers(mol, backend)
+        energy_by_id = {cid: energies[i] for i, cid in enumerate(cids)}
 
-    min_energy = min(energy_by_id.values())
-    energy_sorted_cids = sorted(
-        (cid for cid in cids if energy_by_id[cid] - min_energy <= energy_window),
-        key=lambda cid: energy_by_id[cid],
-    )
+        with nvtx_range("conformer.energy_filter"):
+            min_energy = min(energy_by_id.values())
+            energy_sorted_cids = sorted(
+                (cid for cid in cids if energy_by_id[cid] - min_energy <= energy_window),
+                key=lambda cid: energy_by_id[cid],
+            )
 
-    kept = []
-    for cid in energy_sorted_cids:
-        if all(_rmsd_by_atom_order(mol, cid, k) >= rmsd_threshold for k in kept):
-            kept.append(cid)
-        if len(kept) >= num_confs:
-            break
+        kept = []
+        with nvtx_range("conformer.rmsd_prune"):
+            for cid in energy_sorted_cids:
+                if all(_rmsd_by_atom_order(mol, cid, k) >= rmsd_threshold for k in kept):
+                    kept.append(cid)
+                if len(kept) >= num_confs:
+                    break
 
-    if not kept:
-        raise ValueError("conformer filtering removed every conformer")
+        if not kept:
+            raise ValueError("conformer filtering removed every conformer")
 
-    seed_mol = _copy_single_conformer(mol, kept[0], energy_by_id, forcefield, backend)
-    ensemble = _copy_conformers(mol, kept, energy_by_id, forcefield, backend)
-    return seed_mol, ensemble
+        with nvtx_range("conformer.copy_output"):
+            seed_mol = _copy_single_conformer(mol, kept[0], energy_by_id, forcefield, backend)
+            ensemble = _copy_conformers(mol, kept, energy_by_id, forcefield, backend)
+        return seed_mol, ensemble
