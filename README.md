@@ -1,44 +1,115 @@
-# 3D Building Pipeline
+# ZINC22 3D Building Pipeline
 
-This code will generate db2 files from smiles/mol2.
+This branch builds ZINC-style 3D ligand outputs from SMILES using a
+license-free toolchain:
 
-# Required Software
+- RDKit for seed structures, conformer generation, and tautomer handling.
+- Dimorphite-DL for protonation.
+- OpenBabel for file-format conversion.
+- AMSOL 7.1 for solvation.
 
-- CORINA
-- Openeye OMEGA (code is setup to use the openeye python toolkit - https://docs.eyesopen.com/toolkits/python/quickstart-python/install.html)
-- Chemaxon JCHEM (cxcalc and molconvert)
-- Openbabel
-- Anaconda (Miniconda 3)
+OpenEye OMEGA, ChemAxon/JChem, and CORINA are not required on this branch.
 
-# Getting Started
+## Repository Layout
 
-1. Fork this repository
-2. Clone directory, cd into created directory
-3. Run install.sh
-4. Install conda to either a shared nfs path or the '/soft' directory
-5. Create the conda environment using 'conda env create -f environment.yml -n envname'
-6. Move required software to '/soft' directory. Software must be .tar.gz format
-7. Move required licenses to '/licenses' directory (Jchem/Omega). Software looks for jchem-license.cxl and oe-license.txt by default. These can be changed in the env.sh files
-8. Change paths in env.sh file (required changes are lines that are commented out)
-9. Modify the 'submit/build-3d.bash' file, source the conda environment on the first line
+Some legacy scripts expect the repository to be available as
+`$DOCKBASE/ligand`. Either clone the repository directly at that path or create
+a symlink:
 
-# Setting Up Software
+```bash
+export DOCKBASE=$HOME/experiments/zinc
+git clone git@github.com:scal444/zinc22-3d.git "$DOCKBASE/zinc22-3d"
+ln -sfn "$DOCKBASE/zinc22-3d" "$DOCKBASE/ligand"
+cd "$DOCKBASE/zinc22-3d"
+git switch rdkit_port
+```
 
-In the soft folder, you must add the following folders
+## Conda Environment
 
-1. Openbabel - https://github.com/openbabel/openbabel/releases/tag/openbabel-3-1-1 (you must clone the repository and compile it from the source code)
-2. JChem - https://download.chemaxon.com/jchem-engines
-3. CORINA - containing only the corina executable
-4. extralibs - a folder containing extra lib files that your system needs. This can vary from system to system. Common files include libg2c.so, libz.so, etc.
+Use the compact RDKit environment for new installs:
 
-All software folders will be compressed through the scripts. In the case that these aren't automatically compressed, run;
+```bash
+mamba env create -f environment-rdkit.yml
+conda activate zinc22-rdkit
+```
 
-- tar -czvf FOLDER_NAME.tar.gz FOLDER_NAME
+If `mamba` is unavailable, `conda env create -f environment-rdkit.yml` also
+works, just more slowly.
 
-for each folder
+The older `environment.yml` is retained for compatibility with historical
+builds; new users should start from `environment-rdkit.yml`.
 
-# Running The Pipeline
+## AMSOL
 
-1. Source the conda environment
-2. Set optional/required environment variables ([see here](https://wiki.docking.org/index.php/Building_The_3D_Pipeline_ZINC22))
-3. Run 'bash submit/submit-all.bash' to start job
+AMSOL is not a Python package and is not vendored in this repository. Download
+AMSOL 7.1 from:
+
+```text
+https://comp.chem.umn.edu/amsol/
+```
+
+Build it on the target machine and point `AMSOLEXE` at the executable. One
+working layout is:
+
+```bash
+mkdir -p "$DOCKBASE/third_party/amsol/amsol7.1"
+# place or build the executable here:
+export AMSOLEXE="$DOCKBASE/third_party/amsol/amsol7.1/amsol7.1.exe"
+chmod +x "$AMSOLEXE"
+```
+
+## Runtime Environment
+
+After activating the conda environment, set:
+
+```bash
+export DOCKBASE=${DOCKBASE:-$HOME/experiments/zinc}
+export AMSOLEXE="$DOCKBASE/third_party/amsol/amsol7.1/amsol7.1.exe"
+export OBABELBASE="$CONDA_PREFIX"
+export CSH="$CONDA_PREFIX/bin/tcsh"
+export PYTHONPATH="$DOCKBASE/ligand/mol2db2_py3_strain:$DOCKBASE/ligand/strain"
+export LD_LIBRARY_PATH="$CONDA_PREFIX/lib:${LD_LIBRARY_PATH:-}"
+```
+
+Conformer defaults:
+
+```bash
+export RDKIT_CONF_BUDGET_BASE=${RDKIT_CONF_BUDGET_BASE:-600}
+export RDKIT_CONF_ENERGY_WINDOW=${RDKIT_CONF_ENERGY_WINDOW:-12}
+export RDKIT_CONF_RMSD=${RDKIT_CONF_RMSD:-0.5}
+export RDKIT_CONF_TIMEOUT=${RDKIT_CONF_TIMEOUT:-120}
+export RDKIT_CONF_SEED=${RDKIT_CONF_SEED:-0xf00d}
+```
+
+## Smoke Test
+
+```bash
+python -m pytest -q
+bash -n generate/build_database_ligand_strain_noH_btingle.sh
+
+head -n 1 validation/zinc22_random_10.smi > /tmp/zinc22-one.smi
+bash generate/build_database_ligand_strain_noH_btingle.sh \
+  -H 7.4 --no-db \
+  -d /tmp/zinc22-smoke \
+  /tmp/zinc22-one.smi
+```
+
+A successful smoke test should report `outputs built: 1` and create
+`/tmp/zinc22-smoke/working/output.tar.gz`.
+
+## Production Submission
+
+For batch submission, provide the variables checked by
+`submit/submit-all.bash`, especially:
+
+```bash
+export INPUT_FILE=/path/to/input.smi
+export OUTPUT_DEST=/path/to/output-root
+export SOFT_HOME=/path/to/software-root
+```
+
+Then run:
+
+```bash
+bash submit/submit-all.bash
+```
