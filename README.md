@@ -21,7 +21,7 @@ export DOCKBASE=$HOME/experiments/zinc
 git clone git@github.com:scal444/zinc22-3d.git "$DOCKBASE/zinc22-3d"
 ln -sfn "$DOCKBASE/zinc22-3d" "$DOCKBASE/ligand"
 cd "$DOCKBASE/zinc22-3d"
-git switch rdkit_port
+git switch nvmolkit_port
 ```
 
 ## Conda Environment
@@ -38,6 +38,48 @@ works, just more slowly.
 
 The older `environment.yml` is retained for compatibility with historical
 builds; new users should start from `environment-rdkit.yml`.
+
+### nvMolKit GPU Environment
+
+On `nvmolkit_port`, use the GPU environment instead:
+
+```bash
+mamba env create -f environment-nvmolkit.yml
+conda activate zinc22-nvmolkit
+```
+
+This spec intentionally pins CUDA PyTorch builds:
+
+```text
+pytorch=2.10.0=*cuda129*
+libtorch=2.10.0=*cuda129*
+triton=3.5.1
+cuda-version=12.9
+nvmolkit=0.5.0
+```
+
+Avoid an unconstrained PyTorch install for this branch. Conda can otherwise
+solve to a CPU-only PyTorch build or to a CUDA build that does not support newer
+GPUs such as RTX 50-series cards.
+
+Verify the GPU stack before benchmarking:
+
+```bash
+nvidia-smi
+python - <<'PY'
+import torch
+import nvmolkit
+from nvmolkit.embedMolecules import EmbedMolecules
+print("torch", torch.__version__)
+print("torch cuda", torch.version.cuda)
+print("cuda available", torch.cuda.is_available())
+print("device count", torch.cuda.device_count())
+if torch.cuda.is_available():
+    print("device 0", torch.cuda.get_device_name(0))
+print("nvmolkit", getattr(nvmolkit, "__version__", "unknown"))
+print("EmbedMolecules import ok")
+PY
+```
 
 ## AMSOL
 
@@ -79,6 +121,37 @@ export RDKIT_CONF_ENERGY_WINDOW=${RDKIT_CONF_ENERGY_WINDOW:-12}
 export RDKIT_CONF_RMSD=${RDKIT_CONF_RMSD:-0.5}
 export RDKIT_CONF_TIMEOUT=${RDKIT_CONF_TIMEOUT:-120}
 export RDKIT_CONF_SEED=${RDKIT_CONF_SEED:-0xf00d}
+```
+
+For nvMolKit conformer generation:
+
+```bash
+export CONFORMER_BACKEND=nvmolkit
+export SEED_CONFORMER_BACKEND=${SEED_CONFORMER_BACKEND:-rdkit}
+```
+
+The AMSOL seed conformer defaults to RDKit even when the ensemble conformer
+backend is nvMolKit. That avoids GPU launch overhead for the one-conformer seed
+task.
+
+## CUDA MPS for Parallel nvMolKit Runs
+
+If several worker processes share one GPU, enable CUDA MPS before launching the
+workers. Without MPS, multi-process nvMolKit runs can serialize enough GPU work
+that the speedup is much smaller.
+
+```bash
+export CUDA_MPS_PIPE_DIRECTORY=/tmp/nvidia-mps-$USER
+export CUDA_MPS_LOG_DIRECTORY=/tmp/nvidia-mps-$USER-log
+mkdir -p "$CUDA_MPS_PIPE_DIRECTORY" "$CUDA_MPS_LOG_DIRECTORY"
+nvidia-cuda-mps-control -d
+```
+
+Run the benchmark or production workers with those two environment variables
+still set. Stop the temporary MPS daemon after the run:
+
+```bash
+printf 'quit\n' | nvidia-cuda-mps-control
 ```
 
 ## Smoke Test
