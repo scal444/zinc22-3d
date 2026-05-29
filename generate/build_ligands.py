@@ -30,8 +30,11 @@ from rdkit_conformers import (
     CONF_BACKEND_PROP,
     CONF_ENERGY_PROP,
     CONF_FORCEFIELD_PROP,
+    conformer_batch_size,
+    generate_conformation_batch,
     generate_conformations,
     generate_seed_conformation,
+    selected_backend,
 )
 
 
@@ -426,6 +429,31 @@ with tarfile.open("output.tar.gz", mode='w:gz') as output:
     built_outputs = 0
     
     skip_conformers = True if os.getenv("SKIP_OMEGA") or os.getenv("SKIP_RDKIT_CONFORMERS") else False
+    batched_conformers = (
+        not skip_conformers
+        and selected_backend() == "nvmolkit"
+        and conformer_batch_size() > 1
+    )
+    batched_conformer_results = {}
+    batched_conformer_failures = {}
+    if batched_conformers:
+        start = time.time()
+        batch_items = []
+        for i, mol in enumerate(mol2_data):
+            mol.rotatable_terminal_h = count_hydrogens(mol.dockFormat)
+            batch_items.append((i, mol.rdkitFormat, mol.rotatable_terminal_h))
+        batched_conformer_results, batched_conformer_failures = generate_conformation_batch(batch_items)
+        t_conformer_tot += (time.time() - start)
+        batch_stats = getattr(generate_conformation_batch, "last_stats", {})
+        print(
+            "batched nvmolkit conformer generation: {} succeeded, {} failed, batch size {}, batches {}, fallbacks {}".format(
+                len(batched_conformer_results),
+                len(batched_conformer_failures),
+                conformer_batch_size(),
+                batch_stats.get("batches", 0),
+                batch_stats.get("batch_fallbacks", 0),
+            )
+        )
 
     for i, mol in enumerate(mol2_data):
         zinc_hash = get_zinc_directory_hash(mol.name)
@@ -433,11 +461,16 @@ with tarfile.open("output.tar.gz", mode='w:gz') as output:
         print(zinc_hash + '/' + mol_fullname)
 
         # new wrapper function added to hydrogens.py, count_hydrogens
-        h = count_hydrogens(mol.dockFormat)
+        h = getattr(mol, "rotatable_terminal_h", count_hydrogens(mol.dockFormat))
         if not skip_conformers:
             start = time.time()
             try:
-                _seed, ensemble = generate_conformations(mol.rdkitFormat, h)
+                if batched_conformers:
+                    if i in batched_conformer_failures:
+                        raise batched_conformer_failures[i]
+                    _seed, ensemble = batched_conformer_results[i]
+                else:
+                    _seed, ensemble = generate_conformations(mol.rdkitFormat, h)
                 ensemble = pin_largest_rigid_fragment(ensemble, mol.dockFormat)
                 db2ins = [MultiMol2.rdkit2dock_and_supplier(ensemble, mol.dockFormat)]
                 print(

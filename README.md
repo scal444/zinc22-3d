@@ -128,11 +128,17 @@ For nvMolKit conformer generation:
 ```bash
 export CONFORMER_BACKEND=nvmolkit
 export SEED_CONFORMER_BACKEND=${SEED_CONFORMER_BACKEND:-rdkit}
+export NVMOLKIT_CONFORMER_BATCH_SIZE=${NVMOLKIT_CONFORMER_BATCH_SIZE:-1}
 ```
 
 The AMSOL seed conformer defaults to RDKit even when the ensemble conformer
 backend is nvMolKit. That avoids GPU launch overhead for the one-conformer seed
 task.
+
+`NVMOLKIT_CONFORMER_BATCH_SIZE` is experimental. Values above 1 group molecules
+with the same conformer budget into one nvMolKit call inside each worker
+process. Assess it with longer benchmarks because short runs are sensitive to
+GPU warmup, MPS state, and tranche composition.
 
 ## CUDA MPS for Parallel nvMolKit Runs
 

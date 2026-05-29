@@ -5,6 +5,8 @@ from generate.rdkit_conformers import (
     CONF_BACKEND_PROP,
     CONF_ENERGY_PROP,
     CONF_FORCEFIELD_PROP,
+    conformer_batch_size,
+    generate_conformation_batch,
     generate_conformations,
     generate_seed_conformation,
     selected_backend,
@@ -53,3 +55,24 @@ def test_seed_backend_uses_seed_override(monkeypatch):
     monkeypatch.setenv("SEED_CONFORMER_BACKEND", "nvmolkit")
 
     assert selected_seed_backend() == "nvmolkit"
+
+
+def test_rdkit_batch_api_uses_existing_single_molecule_path(monkeypatch):
+    monkeypatch.setenv("RDKIT_CONF_BUDGET_BASE", "5")
+
+    results, failures = generate_conformation_batch([
+        ("a", mol_from_smiles("CCCC"), 0),
+        ("b", mol_from_smiles("CCO"), 0),
+    ])
+
+    assert failures == {}
+    assert set(results) == {"a", "b"}
+    assert 1 <= results["a"][1].GetNumConformers() <= 5
+    assert results["a"][1].GetConformer(0).GetProp(CONF_BACKEND_PROP) == "rdkit"
+    assert generate_conformation_batch.last_stats["single_molecule_calls"] == 2
+
+
+def test_conformer_batch_size_defaults_to_one(monkeypatch):
+    monkeypatch.delenv("NVMOLKIT_CONFORMER_BATCH_SIZE", raising=False)
+
+    assert conformer_batch_size() == 1

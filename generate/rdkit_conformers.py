@@ -23,6 +23,7 @@ DEFAULT_TIMEOUT = 120
 DEFAULT_SEED = 0xF00D
 DEFAULT_BACKEND = "rdkit"
 DEFAULT_SEED_BACKEND = "rdkit"
+DEFAULT_NVMOLKIT_CONFORMER_BATCH_SIZE = 1
 
 
 def _env_int(name, default):
@@ -61,6 +62,10 @@ def selected_backend():
 def selected_seed_backend():
     backend = os.environ.get("SEED_CONFORMER_BACKEND", DEFAULT_SEED_BACKEND).strip().lower()
     return _normalize_backend_name(backend, "SEED_CONFORMER_BACKEND")
+
+
+def conformer_batch_size():
+    return max(1, _env_int("NVMOLKIT_CONFORMER_BATCH_SIZE", DEFAULT_NVMOLKIT_CONFORMER_BATCH_SIZE))
 
 
 def _normalize_backend_name(backend, env_name):
@@ -167,6 +172,25 @@ def _normalize_nvmolkit_energies(raw_energies):
     return [float(energy) for energy in raw_energies]
 
 
+def _normalize_nvmolkit_batch_energies(raw_energies, expected_molecules):
+    if hasattr(raw_energies, "numpy"):
+        raw_energies = raw_energies.numpy()
+    if hasattr(raw_energies, "tolist"):
+        raw_energies = raw_energies.tolist()
+    if expected_molecules == 1:
+        return [_normalize_nvmolkit_energies(raw_energies)]
+    if not isinstance(raw_energies, (list, tuple)):
+        raise ValueError("nvMolKit returned scalar energies for a molecule batch")
+    if len(raw_energies) != expected_molecules:
+        raise ValueError(
+            "nvMolKit returned energies for {} molecules, expected {}".format(
+                len(raw_energies),
+                expected_molecules,
+            )
+        )
+    return [_normalize_nvmolkit_energies(energies) for energies in raw_energies]
+
+
 def _optimize_conformers_nvmolkit(mol):
     if not _env_bool("NVMOLKIT_OPTIMIZE", True):
         return _optimize_conformers_rdkit(mol)
@@ -186,6 +210,42 @@ def _optimize_conformers_nvmolkit(mol):
         hardwareOptions=_nvmolkit_hardware_options(),
     )
     return _normalize_nvmolkit_energies(raw_energies), "nvMolKit-MMFF94"
+
+
+def _optimize_conformer_batch_nvmolkit(mols):
+    energies_by_index = [None] * len(mols)
+    forcefield_by_index = [None] * len(mols)
+
+    eligible = [
+        index for index, mol in enumerate(mols)
+        if _env_bool("NVMOLKIT_OPTIMIZE", True) and AllChem.MMFFHasAllMoleculeParams(mol)
+    ]
+    if eligible:
+        try:
+            from nvmolkit.mmffOptimization import MMFFOptimizeMoleculesConfs
+        except ImportError as exc:
+            raise ImportError(
+                "CONFORMER_BACKEND=nvmolkit requires nvmolkit.mmffOptimization"
+            ) from exc
+
+        raw_energies = MMFFOptimizeMoleculesConfs(
+            molecules=[mols[index] for index in eligible],
+            maxIters=_env_int("NVMOLKIT_MMFF_MAX_ITERS", 1000),
+            ignoreInterfragInteractions=False,
+            hardwareOptions=_nvmolkit_hardware_options(),
+        )
+        batch_energies = _normalize_nvmolkit_batch_energies(raw_energies, len(eligible))
+        for index, energies in zip(eligible, batch_energies):
+            energies_by_index[index] = energies
+            forcefield_by_index[index] = "nvMolKit-MMFF94"
+
+    for index, mol in enumerate(mols):
+        if energies_by_index[index] is None:
+            energies, forcefield = _optimize_conformers_rdkit(mol)
+            energies_by_index[index] = energies
+            forcefield_by_index[index] = forcefield
+
+    return energies_by_index, forcefield_by_index
 
 
 def _optimize_conformers(mol, backend):
@@ -254,10 +314,59 @@ def _embed_conformers_nvmolkit(mol, num_confs, seed):
     return cids
 
 
+def _embed_conformer_batch_nvmolkit(mols, num_confs, seed):
+    try:
+        from nvmolkit.embedMolecules import EmbedMolecules
+    except ImportError as exc:
+        raise ImportError(
+            "CONFORMER_BACKEND=nvmolkit requires the nvmolkit package"
+        ) from exc
+
+    for mol in mols:
+        mol.RemoveAllConformers()
+    EmbedMolecules(
+        molecules=mols,
+        params=_nvmolkit_params(seed),
+        confsPerMolecule=int(num_confs),
+        maxIterations=_env_int("NVMOLKIT_MAX_ITERATIONS", -1),
+        hardwareOptions=_nvmolkit_hardware_options(),
+    )
+    cid_lists = [[conf.GetId() for conf in mol.GetConformers()] for mol in mols]
+    if any(not cids for cids in cid_lists):
+        raise ValueError("nvMolKit ETKDG generated zero conformers for a batched molecule")
+    return cid_lists
+
+
 def _embed_conformers(mol, num_confs, seed, backend):
     if backend == "nvmolkit":
         return _embed_conformers_nvmolkit(mol, num_confs, seed)
     return _embed_conformers_rdkit(mol, num_confs, seed)
+
+
+def _filter_conformations(mol, cids, energies, forcefield, backend, num_confs, energy_window, rmsd_threshold):
+    if len(energies) != len(cids):
+        raise ValueError("conformer energy count does not match conformer count")
+    energy_by_id = {cid: energies[i] for i, cid in enumerate(cids)}
+
+    min_energy = min(energy_by_id.values())
+    energy_sorted_cids = sorted(
+        (cid for cid in cids if energy_by_id[cid] - min_energy <= energy_window),
+        key=lambda cid: energy_by_id[cid],
+    )
+
+    kept = []
+    for cid in energy_sorted_cids:
+        if all(_rmsd_by_atom_order(mol, cid, k) >= rmsd_threshold for k in kept):
+            kept.append(cid)
+        if len(kept) >= num_confs:
+            break
+
+    if not kept:
+        raise ValueError("conformer filtering removed every conformer")
+
+    seed_mol = _copy_single_conformer(mol, kept[0], energy_by_id, forcefield, backend)
+    ensemble = _copy_conformers(mol, kept, energy_by_id, forcefield, backend)
+    return seed_mol, ensemble
 
 
 def generate_seed_conformation(mol, seed=DEFAULT_SEED):
@@ -269,6 +378,92 @@ def generate_seed_conformation(mol, seed=DEFAULT_SEED):
     energies, forcefield = _optimize_conformers(mol, backend)
     energy_by_id = {cid: energies[i] for i, cid in enumerate(cids)}
     return _copy_single_conformer(mol, cids[0], energy_by_id, forcefield, backend)
+
+
+def generate_conformation_batch(mol_items, seed=DEFAULT_SEED):
+    """Return (results, failures) for batched conformer generation.
+
+    mol_items is an iterable of (key, rdkit_mol, num_rotatable_terminal_h).
+    results maps key -> (seed_mol_1conf, ensemble_mol_Nconfs).
+    failures maps key -> exception.
+
+    RDKit uses the existing one-molecule path. nvMolKit groups by conformer
+    budget so each GPU batch can use one confsPerMolecule value.
+    """
+    mol_items = list(mol_items)
+    backend = selected_backend()
+    stats = {
+        "backend": backend,
+        "groups": 0,
+        "batches": 0,
+        "batched_molecules": 0,
+        "batch_fallbacks": 0,
+        "fallback_molecules": 0,
+        "single_molecule_calls": 0,
+    }
+    if backend != "nvmolkit":
+        results = {}
+        failures = {}
+        for key, mol, num_rotatable_terminal_h in mol_items:
+            try:
+                results[key] = generate_conformations(mol, num_rotatable_terminal_h, seed=seed)
+                stats["single_molecule_calls"] += 1
+            except Exception as exc:
+                failures[key] = exc
+        generate_conformation_batch.last_stats = stats
+        return results, failures
+
+    seed = _env_int("RDKIT_CONF_SEED", seed)
+    energy_window = _env_float("RDKIT_CONF_ENERGY_WINDOW", DEFAULT_ENERGY_WINDOW)
+    rmsd_threshold = _env_float("RDKIT_CONF_RMSD", DEFAULT_RMSD_THRESHOLD)
+    batch_size = conformer_batch_size()
+
+    grouped = {}
+    failures = {}
+    for key, mol, num_rotatable_terminal_h in mol_items:
+        try:
+            num_confs = _conformer_budget(num_rotatable_terminal_h)
+        except Exception as exc:
+            failures[key] = exc
+            continue
+        grouped.setdefault(num_confs, []).append((key, mol, num_rotatable_terminal_h))
+
+    results = {}
+    for num_confs, group in grouped.items():
+        stats["groups"] += 1
+        for offset in range(0, len(group), batch_size):
+            chunk = group[offset:offset + batch_size]
+            stats["batches"] += 1
+            keys = [key for key, _mol, _num_rotatable_terminal_h in chunk]
+            mols = [Chem.Mol(mol) for _key, mol, _num_rotatable_terminal_h in chunk]
+            try:
+                cid_lists = _embed_conformer_batch_nvmolkit(mols, num_confs, seed)
+                energies_by_index, forcefield_by_index = _optimize_conformer_batch_nvmolkit(mols)
+                stats["batched_molecules"] += len(chunk)
+                for index, key in enumerate(keys):
+                    results[key] = _filter_conformations(
+                        mols[index],
+                        cid_lists[index],
+                        energies_by_index[index],
+                        forcefield_by_index[index],
+                        backend,
+                        num_confs,
+                        energy_window,
+                        rmsd_threshold,
+                    )
+            except Exception:
+                stats["batch_fallbacks"] += 1
+                stats["fallback_molecules"] += len(chunk)
+                for key, mol, num_rotatable_terminal_h in chunk:
+                    try:
+                        results[key] = generate_conformations(mol, num_rotatable_terminal_h, seed=seed)
+                    except Exception as exc:
+                        failures[key] = exc
+    generate_conformation_batch.last_stats = stats
+    return results, failures
+
+
+generate_conformation_batch.last_stats = {}
 
 
 def generate_conformations(mol, num_rotatable_terminal_h, seed=DEFAULT_SEED):
@@ -292,24 +487,13 @@ def generate_conformations(mol, num_rotatable_terminal_h, seed=DEFAULT_SEED):
     mol = Chem.Mol(mol)
     cids = _embed_conformers(mol, num_confs, seed, backend)
     energies, forcefield = _optimize_conformers(mol, backend)
-    energy_by_id = {cid: energies[i] for i, cid in enumerate(cids)}
-
-    min_energy = min(energy_by_id.values())
-    energy_sorted_cids = sorted(
-        (cid for cid in cids if energy_by_id[cid] - min_energy <= energy_window),
-        key=lambda cid: energy_by_id[cid],
+    return _filter_conformations(
+        mol,
+        cids,
+        energies,
+        forcefield,
+        backend,
+        num_confs,
+        energy_window,
+        rmsd_threshold,
     )
-
-    kept = []
-    for cid in energy_sorted_cids:
-        if all(_rmsd_by_atom_order(mol, cid, k) >= rmsd_threshold for k in kept):
-            kept.append(cid)
-        if len(kept) >= num_confs:
-            break
-
-    if not kept:
-        raise ValueError("conformer filtering removed every conformer")
-
-    seed_mol = _copy_single_conformer(mol, kept[0], energy_by_id, forcefield, backend)
-    ensemble = _copy_conformers(mol, kept, energy_by_id, forcefield, backend)
-    return seed_mol, ensemble
