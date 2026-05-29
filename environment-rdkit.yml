@@ -1,0 +1,11 @@
+name: zinc22-rdkit
+channels:
+  - conda-forge
+dependencies:
+  - python=3.11
+  - rdkit=2025.09.5
+  - openbabel=3.1.1
+  - dimorphite-dl=2.0.2
+  - scipy
+  - pytest
+  - tcsh
