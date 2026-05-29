@@ -27,6 +27,7 @@ from mol2db2 import mol2db2_quick
 from Torsion_Strain import calc_strain
 from TL_Functions import Mol2MolSupplier_noF
 from rdkit_conformers import (
+    CONF_BACKEND_PROP,
     CONF_ENERGY_PROP,
     CONF_FORCEFIELD_PROP,
     generate_conformations,
@@ -440,14 +441,15 @@ with tarfile.open("output.tar.gz", mode='w:gz') as output:
                 ensemble = pin_largest_rigid_fragment(ensemble, mol.dockFormat)
                 db2ins = [MultiMol2.rdkit2dock_and_supplier(ensemble, mol.dockFormat)]
                 print(
-                    "RDKit conformers: {} ({})".format(
+                    "{} conformers: {} ({})".format(
+                        ensemble.GetConformer(0).GetProp(CONF_BACKEND_PROP),
                         ensemble.GetNumConformers(),
                         ensemble.GetConformer(0).GetProp(CONF_FORCEFIELD_PROP)
                     )
                 )
             except Exception as exc:
                 conformer_failures += 1
-                print("RDKit conformer generation failed for {}: {}".format(mol.name, exc), file=sys.stderr)
+                print("conformer generation failed for {}: {}".format(mol.name, exc), file=sys.stderr)
                 continue
             t_conformer_tot += (time.time() - start)
         else:

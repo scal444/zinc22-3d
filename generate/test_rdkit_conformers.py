@@ -2,9 +2,11 @@ import pytest
 from rdkit import Chem
 
 from generate.rdkit_conformers import (
+    CONF_BACKEND_PROP,
     CONF_ENERGY_PROP,
     CONF_FORCEFIELD_PROP,
     generate_conformations,
+    selected_backend,
 )
 
 
@@ -29,3 +31,11 @@ def test_generates_energy_sorted_pruned_conformers(monkeypatch):
     ]
     assert energies == sorted(energies)
     assert ensemble.GetConformer(0).GetProp(CONF_FORCEFIELD_PROP) in {"MMFF94s", "UFF"}
+    assert ensemble.GetConformer(0).GetProp(CONF_BACKEND_PROP) == "rdkit"
+
+
+def test_rejects_unknown_conformer_backend(monkeypatch):
+    monkeypatch.setenv("CONFORMER_BACKEND", "not-a-backend")
+
+    with pytest.raises(ValueError, match="Unsupported CONFORMER_BACKEND"):
+        selected_backend()
