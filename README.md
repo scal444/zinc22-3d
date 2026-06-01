@@ -116,12 +116,20 @@ EOF
 chmod +x "$DOCKBASE/third_party/amsol/bin/g77"
 
 cd "$DOCKBASE/third_party/amsol/amsol7.1"
+# Modern gfortran rejects AMSOL's old NAME= OPEN specifier. FILE= is the
+# equivalent standard spelling.
+sed -i "s/OPEN(19,NAME='fort.19')/OPEN(19,FILE='fort.19')/" new/amsol.f
+sed -i "s/OPEN(20,NAME='fort.20')/OPEN(20,FILE='fort.20')/" new/amsol.f
+
 printf 'man\nlinux\namsol7.1.exe\nsn\n' \
   | env PATH="$DOCKBASE/third_party/amsol/bin:$PATH" tcsh -f ./amsol.compile
 
 export AMSOLEXE="$DOCKBASE/third_party/amsol/amsol7.1/amsol7.1.exe"
 test -x "$AMSOLEXE"
 ```
+
+The build emits many legacy Fortran warnings. The important success marker is
+`AMSOL Compiled Successfully` followed by a present executable at `$AMSOLEXE`.
 
 Do not commit the downloaded AMSOL source or binary to this repository.
 
