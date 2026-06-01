@@ -84,21 +84,46 @@ PY
 ## AMSOL
 
 AMSOL is not a Python package and is not vendored in this repository. Download
-AMSOL 7.1 from:
+and build it from the University of Minnesota distribution site. The AMSOL
+compile script expects an old `g77` command, so create a local shim that calls
+the conda Fortran compiler with legacy flags.
 
-```text
-https://comp.chem.umn.edu/amsol/
-```
-
-Build it on the target machine and point `AMSOLEXE` at the executable. One
-working layout is:
+After activating the conda environment, install the compiler if it is not
+already present:
 
 ```bash
-mkdir -p "$DOCKBASE/third_party/amsol/amsol7.1"
-# place or build the executable here:
-export AMSOLEXE="$DOCKBASE/third_party/amsol/amsol7.1/amsol7.1.exe"
-chmod +x "$AMSOLEXE"
+mamba install -c conda-forge gfortran_linux-64
 ```
+
+Then download and build AMSOL:
+
+```bash
+export DOCKBASE=${DOCKBASE:-$HOME/experiments/zinc}
+mkdir -p "$DOCKBASE/third_party/amsol/bin"
+cd "$DOCKBASE/third_party/amsol"
+
+curl -L -o amsol7.1.tar.xz \
+  https://comp.chem.umn.edu/sds/amsol/amsol7.1.tar.xz
+tar -xf amsol7.1.tar.xz
+
+GFORTRAN="$CONDA_PREFIX/bin/x86_64-conda-linux-gnu-gfortran"
+test -x "$GFORTRAN"
+
+cat > "$DOCKBASE/third_party/amsol/bin/g77" <<EOF
+#!/bin/sh
+exec "$GFORTRAN" -std=legacy -fdec -fallow-argument-mismatch "\$@"
+EOF
+chmod +x "$DOCKBASE/third_party/amsol/bin/g77"
+
+cd "$DOCKBASE/third_party/amsol/amsol7.1"
+printf 'man\nlinux\namsol7.1.exe\nsn\n' \
+  | env PATH="$DOCKBASE/third_party/amsol/bin:$PATH" tcsh -f ./amsol.compile
+
+export AMSOLEXE="$DOCKBASE/third_party/amsol/amsol7.1/amsol7.1.exe"
+test -x "$AMSOLEXE"
+```
+
+Do not commit the downloaded AMSOL source or binary to this repository.
 
 ## Runtime Environment
 
