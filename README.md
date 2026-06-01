@@ -31,6 +31,7 @@ Use the compact RDKit environment for new installs:
 ```bash
 mamba env create -f environment-rdkit.yml
 conda activate zinc22-rdkit
+source ./zinc22-env.sh
 ```
 
 If `mamba` is unavailable, `conda env create -f environment-rdkit.yml` also
@@ -46,6 +47,7 @@ On `nvmolkit_port`, use the GPU environment instead:
 ```bash
 mamba env create -f environment-nvmolkit.yml
 conda activate zinc22-nvmolkit
+source ./zinc22-env.sh
 ```
 
 This spec intentionally pins CUDA PyTorch builds:
@@ -88,8 +90,8 @@ and build it from the University of Minnesota distribution site. The AMSOL
 compile script expects an old `g77` command, so create a local shim that calls
 the conda Fortran compiler with legacy flags.
 
-After activating the conda environment, install the compiler if it is not
-already present:
+The conda environment files include `gfortran_linux-64`. If the environment was
+created before that dependency was added, install it into the active env:
 
 ```bash
 mamba install -c conda-forge gfortran_linux-64
@@ -135,32 +137,42 @@ Do not commit the downloaded AMSOL source or binary to this repository.
 
 ## Runtime Environment
 
-After activating the conda environment, set:
+After activating the conda environment, source the runtime helper:
 
 ```bash
-export DOCKBASE=${DOCKBASE:-$HOME/experiments/zinc}
-export AMSOLEXE="$DOCKBASE/third_party/amsol/amsol7.1/amsol7.1.exe"
-export OBABELBASE="$CONDA_PREFIX"
-export CSH="$CONDA_PREFIX/bin/tcsh"
-export PYTHONPATH="$DOCKBASE/ligand/mol2db2_py3_strain:$DOCKBASE/ligand/strain"
-export LD_LIBRARY_PATH="$CONDA_PREFIX/lib:${LD_LIBRARY_PATH:-}"
+source ./zinc22-env.sh
 ```
 
-Conformer defaults:
+It sets the paths expected by the legacy shell/Python pipeline:
 
 ```bash
-export RDKIT_CONF_BUDGET_BASE=${RDKIT_CONF_BUDGET_BASE:-600}
-export RDKIT_CONF_ENERGY_WINDOW=${RDKIT_CONF_ENERGY_WINDOW:-12}
-export RDKIT_CONF_RMSD=${RDKIT_CONF_RMSD:-0.5}
-export RDKIT_CONF_TIMEOUT=${RDKIT_CONF_TIMEOUT:-120}
-export RDKIT_CONF_SEED=${RDKIT_CONF_SEED:-0xf00d}
+DOCKBASE
+AMSOLEXE
+OBABELBASE
+CSH
+SHELL
+PYTHONPATH
+LD_LIBRARY_PATH
 ```
 
-For nvMolKit conformer generation:
+It also sets the conformer defaults, which can be overridden before running a
+benchmark:
+
+```bash
+CONFORMER_BACKEND=rdkit
+SEED_CONFORMER_BACKEND=rdkit
+RDKIT_CONF_BUDGET_BASE=600
+RDKIT_CONF_ENERGY_WINDOW=12
+RDKIT_CONF_RMSD=0.5
+RDKIT_CONF_TIMEOUT=120
+RDKIT_CONF_SEED=0xf00d
+```
+
+For nvMolKit conformer generation, set:
 
 ```bash
 export CONFORMER_BACKEND=nvmolkit
-export SEED_CONFORMER_BACKEND=${SEED_CONFORMER_BACKEND:-rdkit}
+export SEED_CONFORMER_BACKEND=rdkit
 ```
 
 The AMSOL seed conformer defaults to RDKit even when the ensemble conformer
@@ -196,6 +208,7 @@ unset, the annotations are no-ops.
 Example single-process profile:
 
 ```bash
+source ./zinc22-env.sh
 export ZINC_NVTX=1
 nsys profile --trace=cuda,nvtx,osrt -o /tmp/zinc22-profile \
   bash generate/build_database_ligand_strain_noH_btingle.sh \
@@ -216,38 +229,35 @@ The committed `validation/zinc22_random_10.smi` file is useful for smoke tests,
 short profiling runs, and checking that the full path still produces output. It
 is not large enough for stable throughput estimates.
 
-For representative performance numbers, benchmark a single ZINC22 tranche rather
-than a chemically mixed random set. Runtime and final DB2 set counts depend
-strongly on heavy atom count, logP bin, charge, and terminal-H expansion. The
-reference run in `validation/budget600_500_perf_summary.md` used 500 neutral
-molecules from public ZINC22 `H24P100-N-oaa`, selected from IDs with official
-DB2 headers and matching tranche SMILES.
+For throughput numbers, use a single ZINC22 tranche rather than a chemically
+mixed random set. Runtime and final DB2 set counts depend strongly on heavy atom
+count, logP bin, charge, and terminal-H expansion. The reference run in
+`validation/budget600_500_perf_summary.md` used 500 neutral molecules from
+public ZINC22 `H24P100-N-oaa`, selected from IDs with official DB2 headers and
+matching tranche SMILES.
 
-To get a tranche input:
+The public ZINC file server URLs used for that reference run have returned HTTP
+403 in later checks from this machine. Do not use a nonexistent
+`validation/bench_inputs/...` path as a benchmark default. Use the committed
+validation input for a runnable pipeline check, or point `INPUT` at a local
+tranche file in `SMILES ZINC_ID` format when you have one.
 
-1. Use the ZINC22/CartBlanche tranche browser:
-   `https://cartblanche22.docking.org/tranches/2d`
-2. Select one tranche, for example `H24P100`, neutral charge `N`, and download
-   or export SMILES using the generated ZINC download script.
-3. Keep a record of the tranche, charge, layer/file, and sample command next to
-   the benchmark output.
-
-If the downloaded tranche file is already in `SMILES ZINC_ID` format, sample it:
+If a local tranche file is already in `SMILES ZINC_ID` format, sample it:
 
 ```bash
 mkdir -p validation/bench_inputs
-grep -v '^\s*$' /path/to/H24P100-N-oaa.smi \
+grep -v '^\s*$' /path/to/local-tranche.smi \
   | shuf -n 500 \
-  > validation/bench_inputs/H24P100_N_oaa_500.smi
+  > validation/bench_inputs/local_tranche_500.smi
 ```
 
 If the file has extra columns, keep only the first two:
 
 ```bash
-gzip -dc /path/to/H24P100-N-oaa.smi.gz \
+gzip -dc /path/to/local-tranche.smi.gz \
   | awk '{print $1, $2}' \
   | shuf -n 500 \
-  > validation/bench_inputs/H24P100_N_oaa_500.smi
+  > validation/bench_inputs/local_tranche_500.smi
 ```
 
 ### Single-Worker Benchmark
@@ -256,14 +266,19 @@ Use this for quick RDKit versus nvMolKit checks and single-process Nsight
 profiles:
 
 ```bash
-INPUT=validation/zinc22_random_10.smi
+source ./zinc22-env.sh
+
+INPUT=${INPUT:-validation/zinc22_random_10.smi}
 STAMP=$(date +%Y%m%d-%H%M%S)
 WORK=/tmp/zinc22-bench-single-$STAMP
 
-export CONFORMER_BACKEND=nvmolkit     # or rdkit
+test -s "$INPUT"
+test -x "$AMSOLEXE"
+
+export CONFORMER_BACKEND=${CONFORMER_BACKEND:-rdkit}
 export SEED_CONFORMER_BACKEND=rdkit
-export RDKIT_CONF_BUDGET_BASE=600
-export RDKIT_CONF_TIMEOUT=120
+export RDKIT_CONF_BUDGET_BASE=20
+export RDKIT_CONF_TIMEOUT=20
 
 /usr/bin/time -v bash generate/build_database_ligand_strain_noH_btingle.sh \
   -H 7.4 --no-db \
@@ -278,6 +293,14 @@ If the log prints `found`, the work directory already had an `output.tar.gz` and
 the run is exercising restart behavior. Delete the work directory or choose a
 fresh `WORK` before timing a clean build.
 
+For the ZINC-equivalent conformer budget used in the validation summary, run the
+same command with:
+
+```bash
+export RDKIT_CONF_BUDGET_BASE=600
+export RDKIT_CONF_TIMEOUT=120
+```
+
 ### Four-Worker nvMolKit/MPS Benchmark
 
 Use this for GPU utilization experiments. It splits one input file into four
@@ -286,14 +309,19 @@ larger tranche sample for throughput numbers; the 10-molecule validation input
 is only a short profiling workload.
 
 ```bash
-INPUT=validation/bench_inputs/H24P100_N_oaa_500.smi
+source ./zinc22-env.sh
+
+INPUT=${INPUT:-validation/zinc22_random_10.smi}
 STAMP=$(date +%Y%m%d-%H%M%S)
 WORK=/tmp/zinc22-bench-mps4-$STAMP
 
+test -s "$INPUT"
+test -x "$AMSOLEXE"
+
 export CONFORMER_BACKEND=nvmolkit
 export SEED_CONFORMER_BACKEND=rdkit
-export RDKIT_CONF_BUDGET_BASE=600
-export RDKIT_CONF_TIMEOUT=120
+export RDKIT_CONF_BUDGET_BASE=${RDKIT_CONF_BUDGET_BASE:-600}
+export RDKIT_CONF_TIMEOUT=${RDKIT_CONF_TIMEOUT:-120}
 export OMP_NUM_THREADS=1
 export MKL_NUM_THREADS=1
 export OPENBLAS_NUM_THREADS=1
@@ -339,9 +367,15 @@ each profile.
 ## Smoke Test
 
 ```bash
+source ./zinc22-env.sh
+
+export RDKIT_CONF_BUDGET_BASE=20
+export RDKIT_CONF_TIMEOUT=20
+
 python -m pytest -q
 bash -n generate/build_database_ligand_strain_noH_btingle.sh
 
+test -x "$AMSOLEXE"
 head -n 1 validation/zinc22_random_10.smi > /tmp/zinc22-one.smi
 bash generate/build_database_ligand_strain_noH_btingle.sh \
   -H 7.4 --no-db \
