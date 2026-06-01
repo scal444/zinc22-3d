@@ -171,6 +171,138 @@ nsys profile --trace=cuda,nvtx,osrt -o /tmp/zinc22-profile \
     /path/to/input.smi
 ```
 
+## Benchmarks
+
+Benchmark inputs are plain whitespace-delimited SMILES files:
+
+```text
+SMILES ZINC_ID
+```
+
+The committed `validation/zinc22_random_10.smi` file is useful for smoke tests,
+short profiling runs, and checking that the full path still produces output. It
+is not large enough for stable throughput estimates.
+
+For representative performance numbers, benchmark a single ZINC22 tranche rather
+than a chemically mixed random set. Runtime and final DB2 set counts depend
+strongly on heavy atom count, logP bin, charge, and terminal-H expansion. The
+reference run in `validation/budget600_500_perf_summary.md` used 500 neutral
+molecules from public ZINC22 `H24P100-N-oaa`, selected from IDs with official
+DB2 headers and matching tranche SMILES.
+
+To get a tranche input:
+
+1. Use the ZINC22/CartBlanche tranche browser:
+   `https://cartblanche22.docking.org/tranches/2d`
+2. Select one tranche, for example `H24P100`, neutral charge `N`, and download
+   or export SMILES using the generated ZINC download script.
+3. Keep a record of the tranche, charge, layer/file, and sample command next to
+   the benchmark output.
+
+If the downloaded tranche file is already in `SMILES ZINC_ID` format, sample it:
+
+```bash
+mkdir -p validation/bench_inputs
+grep -v '^\s*$' /path/to/H24P100-N-oaa.smi \
+  | shuf -n 500 \
+  > validation/bench_inputs/H24P100_N_oaa_500.smi
+```
+
+If the file has extra columns, keep only the first two:
+
+```bash
+gzip -dc /path/to/H24P100-N-oaa.smi.gz \
+  | awk '{print $1, $2}' \
+  | shuf -n 500 \
+  > validation/bench_inputs/H24P100_N_oaa_500.smi
+```
+
+### Single-Worker Benchmark
+
+Use this for quick RDKit versus nvMolKit checks and single-process Nsight
+profiles:
+
+```bash
+INPUT=validation/zinc22_random_10.smi
+STAMP=$(date +%Y%m%d-%H%M%S)
+WORK=/tmp/zinc22-bench-single-$STAMP
+
+export CONFORMER_BACKEND=nvmolkit     # or rdkit
+export SEED_CONFORMER_BACKEND=rdkit
+export RDKIT_CONF_BUDGET_BASE=600
+export RDKIT_CONF_TIMEOUT=120
+
+/usr/bin/time -v bash generate/build_database_ligand_strain_noH_btingle.sh \
+  -H 7.4 --no-db \
+  -d "$WORK" \
+  "$INPUT" \
+  2>&1 | tee "$WORK.log"
+```
+
+The log should include `outputs built`, failure counts, and an `elapsed times`
+block with seed, solvation, conformer, strain, DB2, conversion, and total times.
+If the log prints `found`, the work directory already had an `output.tar.gz` and
+the run is exercising restart behavior. Delete the work directory or choose a
+fresh `WORK` before timing a clean build.
+
+### Four-Worker nvMolKit/MPS Benchmark
+
+Use this for GPU utilization experiments. It splits one input file into four
+line-balanced shards and runs four independent full-pipeline workers. Use a
+larger tranche sample for throughput numbers; the 10-molecule validation input
+is only a short profiling workload.
+
+```bash
+INPUT=validation/bench_inputs/H24P100_N_oaa_500.smi
+STAMP=$(date +%Y%m%d-%H%M%S)
+WORK=/tmp/zinc22-bench-mps4-$STAMP
+
+export CONFORMER_BACKEND=nvmolkit
+export SEED_CONFORMER_BACKEND=rdkit
+export RDKIT_CONF_BUDGET_BASE=600
+export RDKIT_CONF_TIMEOUT=120
+export OMP_NUM_THREADS=1
+export MKL_NUM_THREADS=1
+export OPENBLAS_NUM_THREADS=1
+export NVMOLKIT_PREPROCESSING_THREADS=1
+
+export CUDA_MPS_PIPE_DIRECTORY=/tmp/nvidia-mps-$USER-$STAMP
+export CUDA_MPS_LOG_DIRECTORY=/tmp/nvidia-mps-$USER-$STAMP-log
+mkdir -p "$CUDA_MPS_PIPE_DIRECTORY" "$CUDA_MPS_LOG_DIRECTORY"
+nvidia-cuda-mps-control -d
+
+mkdir -p "$WORK/splits" "$WORK/logs" "$WORK/jobs"
+split -n l/4 -d -a 2 "$INPUT" "$WORK/splits/input_"
+
+pids=()
+for shard in "$WORK"/splits/input_*; do
+  name=$(basename "$shard")
+  bash generate/build_database_ligand_strain_noH_btingle.sh \
+    -H 7.4 --no-db \
+    -d "$WORK/jobs/$name" \
+    "$shard" \
+    > "$WORK/logs/$name.log" 2>&1 &
+  pids+=($!)
+done
+
+failed=0
+for pid in "${pids[@]}"; do
+  wait "$pid" || failed=1
+done
+
+printf 'quit\n' | nvidia-cuda-mps-control
+grep -H "outputs built:\|conformer failures:\|strain failures:\|db2 failures:\|archive conversion failures:\|confs:" "$WORK"/logs/*.log
+if [ "$failed" -ne 0 ]; then
+  echo "one or more workers failed" >&2
+fi
+```
+
+For an Nsight Systems version of this run, wrap the four-worker shell block in
+`nsys profile --trace=cuda,nvtx,osrt --trace-fork-before-exec=true --wait=all`.
+Some Nsight versions require `sudo` for GPU metrics. If using `sudo`, pass the
+conda/runtime environment explicitly and delete the selected `WORK` path before
+each profile.
+
 ## Smoke Test
 
 ```bash
